@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_dir"
+gate_state=$(mktemp -d /tmp/fileblade-mcp-tests.XXXXXX)
+trap 'rm -rf -- "$gate_state"' EXIT
+export XDG_STATE_HOME="$gate_state"
+export PYTHONDONTWRITEBYTECODE=1
+
+python3 -m unittest discover -s tests -v
+core_tests=$(python3 -B -c 'import agent_mcp, fileblade_paths; from pathlib import Path; print(Path(fileblade_paths.__file__).resolve().parents[1] / "tests/companion_readonly.py")')
+python3 -B "$core_tests" "$PWD" agent_mcp agent-mcpctl
+
+qml_test_runner="$(command -v qmltestrunner)"
+if [[ -x /usr/lib/qt6/bin/qmltestrunner ]]; then
+  qml_test_runner=/usr/lib/qt6/bin/qmltestrunner
+fi
+env -u DISPLAY QT_QPA_PLATFORM=offscreen QT_QPA_PLATFORMTHEME= "$qml_test_runner" -input tests -import .

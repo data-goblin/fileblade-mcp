@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "id": "data-goblin.fileblade-mcp",
+  "name": "FileBlade Agent MCP",
+  "version": "0.1.0-beta",
+  "author": "Kurt Buhler",
+  "license": "MIT",
+  "description": "Configuration-only MCP inventory with cross-agent copies and recoverable removal",
+  "kinds": [
+    "service"
+  ],
+  "entryPoints": {
+    "service": "Service.qml"
+  },
+  "extensions": {
+    "data-goblin.fileblade/helper": [
+      {
+        "id": "inventory",
+        "entry": "bin/agent-mcpctl",
+        "read": ["list", "prepare-remove"],
+        "write": ["apply", "remove-prepared", "restore"],
+        "timeoutMs": 8000
+      }
+    ],
+    "data-goblin.fileblade/blade": [
+      {
+        "hostContract": 2,
+        "id": "mcp",
+        "name": "MCP",
+        "glyph": "",
+        "description": "Configuration-only MCP server inventory",
+        "entry": "blades/Module.qml",
+        "singleton": true,
+        "minHeight": 150
+      }
+    ]
+  }
+}
