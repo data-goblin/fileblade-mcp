@@ -22,7 +22,7 @@ Item {
   readonly property bool showing: !dismissed && !!plan.show
 
   function install() {
-    if (installing) return
+    if (installing || plan.command.length === 0) return
     installing = true
     Quickshell.execDetached(plan.command)
   }
@@ -110,7 +110,7 @@ Item {
             width: parent.width
             textFormat: Text.PlainText
             wrapMode: Text.WordWrap
-            text: "This is a FileBlade extension. FileBlade was not installed or detected on your computer. Please install it."
+            text: guard.plan.message
             color: Color.popups.text
             font.family: Style.font.family
             font.pixelSize: Style.font.body
@@ -126,8 +126,20 @@ Item {
             font.pixelSize: Style.font.caption
           }
 
+          Text {
+            width: parent.width
+            textFormat: Text.PlainText
+            wrapMode: Text.WordWrap
+            visible: guard.plan.command.length === 0
+            text: HostGuard.HOST_REPOSITORY
+            color: Color.muted
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+          }
+
           Rectangle {
             anchors.right: parent.right
+            visible: guard.plan.command.length > 0
             width: installLabel.implicitWidth + Style.space(24)
             height: Style.space(26)
             radius: 0
@@ -137,7 +149,7 @@ Item {
               id: installLabel
               textFormat: Text.PlainText
               anchors.centerIn: parent
-              text: guard.installing ? "Installing…" : guard.plan.action
+              text: guard.installing ? "Enabling…" : guard.plan.action
               color: guard.installing ? Color.muted : Color.background
               font.family: Style.font.family
               font.pixelSize: Style.font.body

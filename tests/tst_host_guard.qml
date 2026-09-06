@@ -19,15 +19,26 @@ TestCase {
     compare(plan.show, false)
   }
 
-  function test_host_missing_offers_install() {
+  function test_host_missing_never_installs_anything() {
     var plan = HostGuard.plan({ "data-goblin.fileblade-skills": skills, "acme.weather": weather }, enabledExcept([]), "data-goblin.fileblade-skills")
     compare(plan.show, true)
-    compare(plan.action, "Install")
-    compare(plan.command.slice(0, 2), ["sh", "-c"])
-    verify(plan.command[2].indexOf("omarchy plugin add https://github.com/data-goblin/fileblade.git --enable --yes 2>&1") > 0)
-    verify(plan.command[2].indexOf("exec omarchy restart shell") > 0)
-    verify(plan.command[2].indexOf("omarchy-shell shell rescanPlugins") > 0)
+    compare(plan.action, "")
+    compare(plan.command, [], "an extension never fetches or installs the host")
+    verify(plan.message.indexOf("never installs it for you") > 0)
     compare(plan.names, ["Skills"])
+  }
+
+  function test_no_plan_ever_carries_a_remote_fetch() {
+    var plans = [
+      HostGuard.plan({ "data-goblin.fileblade-skills": skills }, enabledExcept([]), "data-goblin.fileblade-skills"),
+      HostGuard.plan({ "data-goblin.fileblade": host, "data-goblin.fileblade-skills": skills }, enabledExcept(["data-goblin.fileblade"]), "data-goblin.fileblade-skills")
+    ]
+    for (var i = 0; i < plans.length; i++) {
+      var script = plans[i].command.length > 2 ? plans[i].command[2] : ""
+      verify(script.indexOf("plugin add") === -1, "no plugin add: " + script)
+      verify(script.indexOf("git") === -1, "no git: " + script)
+      verify(script.indexOf("http") === -1, "no url: " + script)
+    }
   }
 
   function test_only_first_extension_shows_and_lists_all() {
@@ -43,6 +54,7 @@ TestCase {
     compare(plan.show, true)
     compare(plan.action, "Enable")
     verify(plan.command[2].indexOf("omarchy plugin enable data-goblin.fileblade 2>&1") > 0)
+    verify(plan.message.indexOf("installed but disabled") > 0)
   }
 
   function test_no_registry_data_shows_nothing() {
