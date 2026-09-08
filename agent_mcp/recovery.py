@@ -10,7 +10,8 @@ from typing import Any
 
 MAX_RECORD_BYTES = 1024 * 1024 + 8192
 MAX_RECORDS = 64
-RECORD_LIFETIME_SECONDS = 30 * 24 * 60 * 60
+RECORD_LIFETIME_SECONDS = 3650 * 24 * 60 * 60
+RESTORED_LIFETIME_SECONDS = 7 * 24 * 60 * 60
 IDENTIFIER_CHARACTERS = set("0123456789abcdef")
 IDENTIFIER_LENGTH = 32
 
@@ -36,7 +37,7 @@ class RecoveryStore:
 
     def write(self, payload: dict[str, Any], definition_id: str, context: dict[str, str]) -> str:
         existing = self.find(payload)
-        if existing is not None and existing.get("context") == context:
+        if existing is not None and existing.get("context") == context and "restoredAt" not in existing:
             return str(existing["recordId"])
         document = {
             "formatVersion": 1,
@@ -64,9 +65,19 @@ class RecoveryStore:
         try:
             written = 0
             while written < len(encoded):
-                written += os.write(descriptor, encoded[written:])
+                progress = os.write(descriptor, encoded[written:])
+                if progress <= 0:
+                    raise OSError("the recovery record could not be written")
+                written += progress
             os.fsync(descriptor)
-        finally:
+        except (OSError, RuntimeError):
+            os.close(descriptor)
+            try:
+                self.record_path(record_id).unlink()
+            except OSError:
+                pass
+            raise
+        else:
             os.close(descriptor)
         parent = os.open(self.directory, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
         try:
@@ -118,7 +129,32 @@ class RecoveryStore:
         return found
 
     def live_records(self) -> int:
-        return len(self.records())
+        return len([document for document in self.records() if "restoredAt" not in document])
+
+    def mark_restored(self, record_id: str) -> None:
+        document = self.read(record_id)
+        if document is None or "restoredAt" in document:
+            return
+        document["restoredAt"] = int(time.time())
+        stored = {key: value for key, value in document.items() if key != "recordId"}
+        encoded = json.dumps(stored, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode("utf-8")
+        try:
+            descriptor = os.open(self.record_path(record_id),
+                                 os.O_WRONLY | os.O_TRUNC | os.O_NOFOLLOW | os.O_CLOEXEC)
+        except OSError:
+            return
+        try:
+            written = 0
+            while written < len(encoded):
+                progress = os.write(descriptor, encoded[written:])
+                if progress <= 0:
+                    raise OSError("the recovery record could not be updated")
+                written += progress
+            os.fsync(descriptor)
+        except OSError:
+            pass
+        finally:
+            os.close(descriptor)
 
     def find(self, payload: dict[str, Any]) -> dict[str, Any] | None:
         for document in self.records():
@@ -145,7 +181,10 @@ class RecoveryStore:
                 info = entry.lstat()
             except OSError:
                 continue
-            if not stat.S_ISREG(info.st_mode) or now - info.st_mtime > RECORD_LIFETIME_SECONDS:
+            document = self.read(entry.stem)
+            restored = document is not None and "restoredAt" in document
+            limit = RESTORED_LIFETIME_SECONDS if restored else RECORD_LIFETIME_SECONDS
+            if not stat.S_ISREG(info.st_mode) or now - info.st_mtime > limit:
                 try:
                     entry.unlink()
                 except OSError:

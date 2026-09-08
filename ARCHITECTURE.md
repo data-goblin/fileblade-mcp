@@ -41,7 +41,11 @@ without writing. The record also carries the project and home it was taken in,
 so a restore reaches the same sources even when the caller passes no project.
 Preparing and then removing reuse one record, the record is durable before the
 source is touched, and a full store refuses a new removal rather than evicting
-an undo that has not been used. The earlier free-form payload format, which carried its own
+an undo that has not been used. A confirmed restore marks its record used, so it
+stops holding a place while a repeat restore still answers; used records are
+dropped after a week. Unused records are kept for ten years, which is the widest
+bin retention the core allows, so the helper never expires an undo the bin still
+lists. Sixty-four unused removals is the limit. The earlier free-form payload format, which carried its own
 destination, is gone, so recovery records prepared before this change cannot be
 replayed; the removal itself is still listed in the core bin.
 
