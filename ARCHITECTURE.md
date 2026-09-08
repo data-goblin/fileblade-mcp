@@ -37,7 +37,11 @@ and reports its identifier; `restore` accepts a payload only when it matches one
 of those records, takes the destination from the record rather than from the
 payload, and refuses any path that the current scan does not know as a
 configuration file for that agent. A payload naming an arbitrary file is refused
-without writing. The earlier free-form payload format, which carried its own
+without writing. The record also carries the project and home it was taken in,
+so a restore reaches the same sources even when the caller passes no project.
+Preparing and then removing reuse one record, the record is durable before the
+source is touched, and a full store refuses a new removal rather than evicting
+an undo that has not been used. The earlier free-form payload format, which carried its own
 destination, is gone, so recovery records prepared before this change cannot be
 replayed; the removal itself is still listed in the core bin.
 
