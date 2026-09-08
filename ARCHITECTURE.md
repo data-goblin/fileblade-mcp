@@ -64,20 +64,45 @@ core's descriptor-relative mutation boundary. Private staging, durable recovery
 intents and no-replace publication preserve intervening entries. Existing
 permission bits and source symlinks are retained; new files are private `0600`.
 
-## Missing host
+This file was written by an agent.
 
-`Service.qml` loads `HostGuard.qml` once the shell injects `pluginRegistry`.
-`HostGuard.js` decides from the registry alone: nothing shows while
-`data-goblin.fileblade` is installed and enabled; otherwise the alphabetically
-first enabled plugin that declares a `data-goblin.fileblade/*` extension owns
-one overlay listing every waiting extension. Install runs detached through
-`sh -c` because the clone landing in the plugins directory hot-reloads every
-third-party plugin, guard included: `omarchy plugin add --enable --yes` (or
-`omarchy plugin enable` when the host is installed but disabled), a wait for
-the entry in `shell.json` and the host IPC target, then
-`omarchy restart shell`. Failure raises a critical notification with the last
-error line and rescans plugins so a fresh guard reappears. The close glyph or
-Escape hides it until the next shell start. The card reuses the host's look:
-`assets/fileblade-logo.png` tinted with the accent colour, and the welcome
-tab's accent Install button. `tests/tst_host_guard.qml` covers the
-decision table offscreen.
+## Provider ownership and host availability
+
+The blade contribution declares `provider: "Provider.qml"`. FileBlade creates
+one nonvisual provider per enabled extension identity and shares it across its
+views. It supplies `providerId`, the canonical absolute `providerRoot`, `files`,
+and `inventoryComponentUrl` at construction. The provider exposes `inventory`,
+`error`, `observers`, `viewCount`, `attach(context)`, `detach(context)`, and
+`shutdown()`. Construction stays idle. Duplicate attachment is harmless, the
+last detach suspends the shared inventory, and shutdown unloads it and refuses
+late attachments. Existing inventory options and module contract 2 are preserved.
+
+`Service.qml` resolves its directory from its own QML URL, even when the shell
+strips the manifest's source directory. It lazily delegates to the same provider
+only when an older FileBlade calls attach. The new host owns its provider directly,
+so its companion Service never creates a second inventory. A legacy companion
+without provider metadata still requires its actual old-shell service; a new
+host on a restricted shell must request an extension update instead of loading
+that old Service itself. Updating companions alone cannot repair an old core on
+the restricted shell.
+
+The missing-host card no longer inspects foreign registry entries.
+`bin/fileblade-host-status` reads `omarchy plugin list --json`, validates unique
+IDs and Boolean enabled states, then checks the enabled host with
+`omarchy-shell data-goblin.fileblade status`. Each command has a two-second
+deadline, 128 KiB stdout and 4 KiB stderr limits, and process-group cleanup.
+Listings are limited to 512 rows; the helper returns only the four known companion
+names and states. It reads no agent configuration and downloads nothing.
+
+Missing, disabled, starting, ready, and unknown states stay distinct. Only a
+confirmed disabled host offers the existing explicit Enable action. Starting
+or failed checks never offer installation or enablement. The first enabled
+companion in a successful listing owns the card. Polling backs off to 30 seconds,
+and dismissal stops checks until the next shell start. This is presentation;
+FileBlade's catalog separately controls permission to load providers and helpers.
+
+The QML lifecycle and guard tests plus the standalone host-check tests are part
+of `tests/run`. They cover cold creation, shared observers, last detach, terminal
+shutdown, stripped manifests, both provider ownership paths, unavailable commands,
+malformed authority, output limits and timeouts. User-visible expectation: an
+enabled responding FileBlade produces no missing-host card on either shell API.

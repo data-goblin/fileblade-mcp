@@ -30,6 +30,7 @@
         "glyph": "",
         "description": "Configuration-only MCP server inventory",
         "entry": "blades/Module.qml",
+        "provider": "Provider.qml",
         "singleton": true,
         "minHeight": 150
       }
