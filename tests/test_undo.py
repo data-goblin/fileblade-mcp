@@ -49,7 +49,8 @@ class ExactUndo(unittest.TestCase):
         return Applier(self.inventory()).restore(record_id, json.dumps(payload))
 
     def mint(self, payload):
-        return RecoveryStore(self.inventory().recovery_directory()).write(payload, "fixture")
+        applier = Applier(self.inventory())
+        return applier.recovery.write(payload, "fixture", applier.recovery_context())
 
     def test_codex_round_trip_preserves_unknown_fields_and_source_text(self):
         original = ('model = "fixture"\n\n# retained preface\n[mcp_servers.tool]\n'
@@ -292,6 +293,46 @@ class ExactUndo(unittest.TestCase):
         stored = self.restore(forged, self.mint(forged))
         self.assertFalse(stored["ok"], stored)
         self.assertEqual(outsider.read_bytes(), before)
+
+    def test_a_project_source_restores_without_a_project_argument(self):
+        self.agent = "claude-code"
+        self.source = self.project / ".mcp.json"
+        original = json.dumps({"mcpServers": {"tool": {"command": "printf"}}})
+        self.write(original)
+        removed = self.remove()
+        self.assertTrue(removed["ok"], removed)
+        elsewhere = Inventory(self.home, home=self.home, config_home=self.home / ".config",
+                              codex_home=self.home / ".codex", etc_root=self.root / "etc",
+                              system_owner_uid=os.getuid(), environment={})
+        restored = Applier(elsewhere).restore(removed["recordId"], json.dumps(removed["payload"]))
+        self.assertTrue(restored["ok"], restored)
+        self.assertEqual(json.loads(self.source.read_text()), json.loads(original))
+
+    def test_the_store_refuses_a_new_removal_instead_of_evicting_undo_records(self):
+        self.agent = "claude-code"
+        self.source = self.project / ".mcp.json"
+        self.write(json.dumps({"mcpServers": {"tool": {"command": "printf"}}}))
+        applier = Applier(self.inventory())
+        context = applier.recovery_context()
+        for index in range(64):
+            applier.recovery.write({"format": 2, "filler": index}, "fixture", context)
+        before = self.source.read_bytes()
+        refused = self.remove()
+        self.assertFalse(refused["ok"], refused)
+        self.assertIn("undo store is full", refused["message"])
+        self.assertEqual(self.source.read_bytes(), before)
+
+    def test_preparing_then_removing_reuses_one_record(self):
+        self.agent = "claude-code"
+        self.source = self.project / ".mcp.json"
+        self.write(json.dumps({"mcpServers": {"tool": {"command": "printf"}}}))
+        prepared = Applier(self.inventory()).remove(self.identifier(), prepare=True)
+        self.assertTrue(prepared["ok"], prepared)
+        removed = self.remove()
+        self.assertTrue(removed["ok"], removed)
+        self.assertEqual(prepared["recordId"], removed["recordId"])
+        store = RecoveryStore(self.inventory().recovery_directory())
+        self.assertEqual(store.live_records(), 1)
 
     def test_restore_needs_a_prepared_record_and_reports_its_identifier(self):
         self.agent = "claude-code"

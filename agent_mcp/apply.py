@@ -13,7 +13,7 @@ from .inventory import MAX_CLAUDE_BYTES, MAX_CONFIG_BYTES, Inventory
 from . import records
 from .model import CORE_AGENT_IDS, SCHEMA_VERSION, Definition, safe_label
 from .parsers import ParseFailure, parse_json, parse_toml
-from .recovery import RecoveryStore
+from .recovery import RecoveryFull, RecoveryStore
 from .safeio import atomic_write, bounded_read
 from .tomlwrite import TomlWriteFailure, append_server_block, locate_server_block, remove_server_block, render_server_table
 
@@ -392,6 +392,26 @@ class Applier:
             "results": [result.public() for result in results],
         }
 
+    def recovery_context(self) -> dict[str, str]:
+        return {
+            "project": path_text(str(self.inventory.project)),
+            "home": path_text(str(self.inventory.home)),
+            "configHome": path_text(str(self.inventory.config_home)),
+            "codexHome": path_text(str(self.inventory.codex_home)),
+            "etcRoot": path_text(str(self.inventory.etc_root)),
+        }
+
+    def recorded_inventory(self, context: dict[str, str]) -> Inventory:
+        return Inventory(
+            context.get("project") or str(self.inventory.project),
+            home=context.get("home", str(self.inventory.home)),
+            config_home=context.get("configHome", str(self.inventory.config_home)),
+            etc_root=context.get("etcRoot", str(self.inventory.etc_root)),
+            codex_home=context.get("codexHome", str(self.inventory.codex_home)),
+            system_owner_uid=self.inventory.system_owner_uid,
+            environment=self.inventory.environment,
+        )
+
     def outcome(self, agent_result: AgentResult, payload: dict[str, Any] | None = None,
                 record_id: str = "") -> dict[str, Any]:
         outcome = {
@@ -435,7 +455,7 @@ class Applier:
             encoded = json.dumps(payload, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode("utf-8")
             if len(encoded) > 1024 * 1024:
                 return self.failure("the definition exceeds the undo record size limit; edit the source directly")
-            record_id = self.recovery.write(payload, identifier)
+            record_id = self.recovery.write(payload, identifier, self.recovery_context())
             if prepare:
                 return self.outcome(AgentResult(agent, True, False, "prepared recovery"), payload, record_id)
             if expected_payload is not None and payload != expected_payload:
@@ -448,11 +468,13 @@ class Applier:
             agent_result = AgentResult(agent, True, True, "removed source definition", [self.inventory.logical_path(path)])
         except UnicodeError:
             return self.failure("the definition cannot be preserved as a Unicode undo record; edit the source directly")
+        except RecoveryFull as error:
+            return self.failure(str(error))
         except (OSError, RuntimeError, ValueError) as error:
             return self.failure(str(error))
         return self.outcome(agent_result, payload, record_id)
 
-    def restore_record(self, payload: dict) -> dict:
+    def restore_record(self, payload: dict, context: dict[str, str] | None = None) -> dict:
         agent = payload.get("agent")
         if agent not in WRITE_AGENTS or not isinstance(payload.get("path"), str) or not isinstance(payload.get("target"), str):
             return self.failure("restore payload is incomplete")
@@ -461,8 +483,9 @@ class Applier:
             target = Path(parse_path(payload["target"]))
             if not path.is_absolute() or not target.is_absolute():
                 raise ApplyRefused("restore payload needs absolute source paths")
-            self.inventory.scan()
-            if agent not in self.inventory.config_paths.get(path.absolute(), set()):
+            recorded = self.recorded_inventory(context) if context else self.inventory
+            recorded.scan()
+            if agent not in recorded.config_paths.get(path.absolute(), set()):
                 raise ApplyRefused("the recorded source is not a known configuration file for that agent")
             if path.resolve(strict=False) != target:
                 raise ApplyRefused("the source path changed; restore was refused")
@@ -507,7 +530,7 @@ class Applier:
         prepared = record["payload"]
         if type(prepared.get("format")) is not int or prepared["format"] != 2:
             return self.failure("restore payload has an unsupported format")
-        return self.restore_record(prepared)
+        return self.restore_record(prepared, record.get("context"))
 
     def failure(self, message: str) -> dict[str, Any]:
         return {

@@ -10,9 +10,13 @@ from typing import Any
 
 MAX_RECORD_BYTES = 1024 * 1024 + 8192
 MAX_RECORDS = 64
-RECORD_LIFETIME_SECONDS = 7 * 24 * 60 * 60
+RECORD_LIFETIME_SECONDS = 30 * 24 * 60 * 60
 IDENTIFIER_CHARACTERS = set("0123456789abcdef")
 IDENTIFIER_LENGTH = 32
+
+
+class RecoveryFull(RuntimeError):
+    pass
 
 
 def valid_identifier(record_id: Any) -> bool:
@@ -30,11 +34,15 @@ class RecoveryStore:
     def record_path(self, record_id: str) -> Path:
         return self.directory / f"{record_id}.json"
 
-    def write(self, payload: dict[str, Any], definition_id: str) -> str:
+    def write(self, payload: dict[str, Any], definition_id: str, context: dict[str, str]) -> str:
+        existing = self.find(payload)
+        if existing is not None and existing.get("context") == context:
+            return str(existing["recordId"])
         document = {
             "formatVersion": 1,
             "createdAt": int(time.time()),
             "definitionId": str(definition_id),
+            "context": dict(context),
             "payload": payload,
         }
         encoded = json.dumps(document, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode("utf-8")
@@ -42,7 +50,11 @@ class RecoveryStore:
             raise ValueError("the recovery record exceeds the store size limit")
         self.directory.mkdir(parents=True, exist_ok=True)
         os.chmod(self.directory, 0o700)
-        self.prune()
+        self.expired()
+        if self.live_records() >= MAX_RECORDS:
+            raise RecoveryFull(
+                "the undo store is full; restore or discard earlier removals before removing another"
+            )
         record_id = secrets.token_hex(IDENTIFIER_LENGTH // 2)
         descriptor = os.open(
             self.record_path(record_id),
@@ -50,9 +62,17 @@ class RecoveryStore:
             0o600,
         )
         try:
-            os.write(descriptor, encoded)
+            written = 0
+            while written < len(encoded):
+                written += os.write(descriptor, encoded[written:])
+            os.fsync(descriptor)
         finally:
             os.close(descriptor)
+        parent = os.open(self.directory, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        try:
+            os.fsync(parent)
+        finally:
+            os.close(parent)
         return record_id
 
     def read(self, record_id: str) -> dict[str, Any] | None:
@@ -80,16 +100,29 @@ class RecoveryStore:
         created = document.get("createdAt")
         if not isinstance(created, int) or created <= 0 or time.time() - created > RECORD_LIFETIME_SECONDS:
             return None
-        return document if isinstance(document.get("payload"), dict) else None
+        if not isinstance(document.get("payload"), dict) or not isinstance(document.get("context"), dict):
+            return None
+        document["recordId"] = record_id
+        return document
+
+    def records(self) -> list[dict[str, Any]]:
+        try:
+            entries = sorted(self.directory.glob("*.json"))
+        except OSError:
+            return []
+        found = []
+        for entry in entries[: MAX_RECORDS * 2]:
+            document = self.read(entry.stem)
+            if document is not None:
+                found.append(document)
+        return found
+
+    def live_records(self) -> int:
+        return len(self.records())
 
     def find(self, payload: dict[str, Any]) -> dict[str, Any] | None:
-        try:
-            entries = list(self.directory.glob("*.json"))
-        except OSError:
-            return None
-        for entry in sorted(entries)[:MAX_RECORDS]:
-            document = self.read(entry.stem)
-            if document is not None and document["payload"] == payload:
+        for document in self.records():
+            if document["payload"] == payload:
                 return document
         return None
 
@@ -101,13 +134,12 @@ class RecoveryStore:
         except OSError:
             pass
 
-    def prune(self) -> None:
+    def expired(self) -> None:
         try:
             entries = list(self.directory.glob("*.json"))
         except OSError:
             return
         now = time.time()
-        surviving: list[tuple[float, Path]] = []
         for entry in entries:
             try:
                 info = entry.lstat()
@@ -118,12 +150,3 @@ class RecoveryStore:
                     entry.unlink()
                 except OSError:
                     pass
-                continue
-            surviving.append((info.st_mtime, entry))
-        surviving.sort(key=lambda item: item[0])
-        while len(surviving) >= MAX_RECORDS:
-            _, entry = surviving.pop(0)
-            try:
-                entry.unlink()
-            except OSError:
-                pass
