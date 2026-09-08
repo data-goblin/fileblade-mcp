@@ -28,9 +28,18 @@ the project behind a display alias. A stale selection cannot remove or copy
 its replacement. Removal rechecks the source definition after discovery;
 restore refuses a conflicting entry or retargeted source symlink and is
 idempotent after success. JSON writes require unique members and finite numbers.
-Older records remain readable; retained raw Codex fields are restored rather
-than reduced to the portable description. Missing historical fields cannot be
-reconstructed.
+Retained raw Codex fields are restored rather than reduced to the portable
+description. Missing historical fields cannot be reconstructed.
+
+A restore writes only to a configuration file this helper itself recorded.
+Removal mints a recovery record under the state directory, private to the user,
+and reports its identifier; `restore` accepts a payload only when it matches one
+of those records, takes the destination from the record rather than from the
+payload, and refuses any path that the current scan does not know as a
+configuration file for that agent. A payload naming an arbitrary file is refused
+without writing. The earlier free-form payload format, which carried its own
+destination, is gone, so recovery records prepared before this change cannot be
+replayed; the removal itself is still listed in the core bin.
 
 `tests/run` covers discovery, redaction, copying, exact recovery, conflicts,
 malformed records, native source paths through the core bin, keyboard contracts

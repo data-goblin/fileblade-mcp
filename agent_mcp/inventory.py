@@ -159,13 +159,23 @@ class Inventory:
             if configured_codex_home
             else self.home / ".codex"
         )
+        configured_state_home = read_environment_path(self.environment, "XDG_STATE_HOME")
+        self.state_home = (
+            Path(parse_path(str(configured_state_home))).absolute()
+            if configured_state_home
+            else self.home / ".local" / "state"
+        )
         self.deadline = Deadline(deadline_seconds)
+        self.config_paths: dict[Path, set[str]] = {}
         self.definitions: list[Definition] = []
         self.warnings: list[dict[str, str]] = []
         self.agent_status: dict[str, dict[str, str]] = {}
         self.sources = 0
         self.source_metrics: dict[str, dict[str, object]] = {}
         self.truncated = False
+
+    def recovery_directory(self) -> Path:
+        return self.state_home / "fileblade" / "mcp-recovery"
 
     def logical_path(self, path: Path) -> str:
         absolute = path.absolute()
@@ -210,6 +220,7 @@ class Inventory:
             return None
         if self.scope == "project" and user_source_kind(source_kind):
             return None
+        self.config_paths.setdefault(path.absolute(), set()).add(CORE_AGENT_IDS.get(agent, agent))
         if self.sources >= MAX_SOURCES:
             self.truncated = True
             return None

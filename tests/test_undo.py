@@ -12,6 +12,7 @@ from agent_mcp.apply import Applier, ServerSpec
 from agent_mcp.inventory import Inventory
 from agent_mcp.model import CORE_AGENT_IDS
 from agent_mcp.parsers import ParseFailure, parse_json, parse_toml
+from agent_mcp.recovery import RecoveryStore
 
 
 class ExactUndo(unittest.TestCase):
@@ -44,8 +45,11 @@ class ExactUndo(unittest.TestCase):
     def remove(self, identifier=None):
         return Applier(self.inventory()).remove(identifier or self.identifier())
 
-    def restore(self, payload):
-        return Applier(self.inventory()).restore(json.dumps(payload))
+    def restore(self, payload, record_id=""):
+        return Applier(self.inventory()).restore(record_id, json.dumps(payload))
+
+    def mint(self, payload):
+        return RecoveryStore(self.inventory().recovery_directory()).write(payload, "fixture")
 
     def test_codex_round_trip_preserves_unknown_fields_and_source_text(self):
         original = ('model = "fixture"\n\n# retained preface\n[mcp_servers.tool]\n'
@@ -258,7 +262,7 @@ class ExactUndo(unittest.TestCase):
                            ("name", []), ("container", ["elsewhere"]), ("position", True), ("raw", []), ("definition", "bad")):
             with self.subTest(key=key):
                 payload = dict(removed["payload"], **{key: value})
-                self.assertFalse(self.restore(payload)["ok"])
+                self.assertFalse(self.restore(payload, self.mint(payload))["ok"])
                 self.assertEqual(self.source.read_bytes(), before)
 
     def test_malformed_toml_records_are_refused_without_source_changes(self):
@@ -269,25 +273,45 @@ class ExactUndo(unittest.TestCase):
         for key, value in (("offset", True), ("offset", 10000), ("text", []), ("after", []),
                            ("text", removed["payload"]["text"] + '[unrelated]\nkeep = false\n')):
             with self.subTest(key=key):
-                self.assertFalse(self.restore(dict(removed["payload"], **{key: value}))["ok"])
+                payload = dict(removed["payload"], **{key: value})
+                self.assertFalse(self.restore(payload, self.mint(payload))["ok"])
                 self.assertEqual(self.source.read_bytes(), before)
 
-    def test_legacy_codex_raw_definition_retains_nonportable_fields(self):
-        self.write('model = "keep"\n')
-        raw = {"command": "printf", "enabled": False, "startup_timeout_sec": 0.5, "empty": {},
-               "extra": {"items": [1, False, {"keep": "value"}]}}
-        payload = {"agent": "codex", "path": str(self.source), "raw": raw,
-                   "spec": asdict(ServerSpec("tool", "tool", "stdio", "printf"))}
-        restored = self.restore(payload)
-        self.assertTrue(restored["ok"], restored)
-        self.assertEqual(tomllib.loads(self.source.read_text()), {"model": "keep", "mcp_servers": {"tool": raw}})
-        self.assertFalse(self.restore(payload)["changed"])
-        before = self.source.read_bytes()
-        for fields in ({"args": "bad"}, {"name": []}, {"headers": []}, {"transport": {}}):
-            broken = deepcopy(payload)
-            broken["spec"].update(fields)
-            self.assertFalse(self.restore(broken)["ok"])
-            self.assertEqual(self.source.read_bytes(), before)
+    def test_forged_payload_cannot_write_outside_the_known_configuration_files(self):
+        self.agent = "claude-code"
+        self.source = self.project / ".mcp.json"
+        self.write(json.dumps({"mcpServers": {"tool": {"command": "printf"}}}))
+        removed = self.remove()
+        self.assertTrue(removed["ok"], removed)
+        outsider = self.home / "unrelated.json"
+        outsider.write_text(json.dumps({"keep": True}))
+        before = outsider.read_bytes()
+        forged = dict(removed["payload"], path=str(outsider), target=str(outsider))
+        self.assertFalse(self.restore(forged)["ok"])
+        self.assertEqual(outsider.read_bytes(), before)
+        stored = self.restore(forged, self.mint(forged))
+        self.assertFalse(stored["ok"], stored)
+        self.assertEqual(outsider.read_bytes(), before)
+
+    def test_restore_needs_a_prepared_record_and_reports_its_identifier(self):
+        self.agent = "claude-code"
+        self.source = self.project / ".mcp.json"
+        original = json.dumps({"mcpServers": {"tool": {"command": "printf"}}})
+        self.write(original)
+        prepared = Applier(self.inventory()).remove(self.identifier(), prepare=True)
+        self.assertTrue(prepared["ok"], prepared)
+        self.assertEqual(len(prepared["recordId"]), 32)
+        removed = self.remove()
+        self.assertTrue(removed["ok"], removed)
+        self.assertEqual(len(removed["recordId"]), 32)
+        unknown = self.restore(removed["payload"], "0" * 32)
+        self.assertTrue(unknown["ok"], unknown)
+        RecoveryStore(self.inventory().recovery_directory()).discard(removed["recordId"])
+        RecoveryStore(self.inventory().recovery_directory()).discard(prepared["recordId"])
+        after = self.source.read_bytes()
+        refused = self.restore(removed["payload"])
+        self.assertFalse(refused["ok"], refused)
+        self.assertEqual(self.source.read_bytes(), after)
 
     def test_parser_recursion_and_integer_limits_are_reported_as_refusals(self):
         for parse, source in ((parse_json, b'{"value":' + b'[' * 5000 + b'0' + b']' * 5000 + b'}'),

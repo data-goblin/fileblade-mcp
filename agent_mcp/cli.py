@@ -81,7 +81,7 @@ def main(arguments: list[str] | None = None) -> int:
                 document = applier.remove(options.id, expected_payload=expected) if isinstance(expected, dict) else applier.failure("prepared recovery payload is missing or invalid")
             else:
                 raw_payload, payload_error = stdin_payload()
-                document = applier.failure(payload_error) if payload_error else applier.restore(raw_payload)
+                document = applier.failure(payload_error) if payload_error else applier.restore(options.record_id, raw_payload)
         except (OSError, ValueError, TimeoutError):
             document = {
                 "ok": False,

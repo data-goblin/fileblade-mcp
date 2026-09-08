@@ -13,6 +13,7 @@ from .inventory import MAX_CLAUDE_BYTES, MAX_CONFIG_BYTES, Inventory
 from . import records
 from .model import CORE_AGENT_IDS, SCHEMA_VERSION, Definition, safe_label
 from .parsers import ParseFailure, parse_json, parse_toml
+from .recovery import RecoveryStore
 from .safeio import atomic_write, bounded_read
 from .tomlwrite import TomlWriteFailure, append_server_block, locate_server_block, remove_server_block, render_server_table
 
@@ -183,6 +184,7 @@ class Applier:
     def __init__(self, inventory: Inventory) -> None:
         self.inventory = inventory
         self.snapshots: dict[Path, Snapshot] = {}
+        self.recovery = RecoveryStore(inventory.recovery_directory())
 
     def home(self) -> Path:
         return self.inventory.home
@@ -390,13 +392,8 @@ class Applier:
             "results": [result.public() for result in results],
         }
 
-    def rewrite_source(self, agent: str, path: Path, spec: ServerSpec, state: str) -> AgentResult:
-        if agent == "codex":
-            return self.apply_toml(agent, path, spec, state)
-        limit = MAX_CLAUDE_BYTES if agent == "claude-code" else MAX_CONFIG_BYTES
-        return self.apply_json(agent, path, spec, state, limit)
-
-    def outcome(self, agent_result: AgentResult, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    def outcome(self, agent_result: AgentResult, payload: dict[str, Any] | None = None,
+                record_id: str = "") -> dict[str, Any]:
         outcome = {
             "ok": agent_result.ok,
             "schemaVersion": SCHEMA_VERSION,
@@ -407,6 +404,8 @@ class Applier:
         }
         if payload is not None:
             outcome["payload"] = payload
+        if record_id:
+            outcome["recordId"] = record_id
         return outcome
 
     def remove(self, identifier: str, *, prepare: bool = False, expected_payload: dict | None = None) -> dict[str, Any]:
@@ -436,8 +435,9 @@ class Applier:
             encoded = json.dumps(payload, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode("utf-8")
             if len(encoded) > 1024 * 1024:
                 return self.failure("the definition exceeds the undo record size limit; edit the source directly")
+            record_id = self.recovery.write(payload, identifier)
             if prepare:
-                return self.outcome(AgentResult(agent, True, False, "prepared recovery"), payload)
+                return self.outcome(AgentResult(agent, True, False, "prepared recovery"), payload, record_id)
             if expected_payload is not None and payload != expected_payload:
                 return self.failure("the source definition changed after recovery was prepared; nothing was changed")
             if path.resolve(strict=True) != target:
@@ -450,7 +450,7 @@ class Applier:
             return self.failure("the definition cannot be preserved as a Unicode undo record; edit the source directly")
         except (OSError, RuntimeError, ValueError) as error:
             return self.failure(str(error))
-        return self.outcome(agent_result, payload)
+        return self.outcome(agent_result, payload, record_id)
 
     def restore_record(self, payload: dict) -> dict:
         agent = payload.get("agent")
@@ -461,6 +461,9 @@ class Applier:
             target = Path(parse_path(payload["target"]))
             if not path.is_absolute() or not target.is_absolute():
                 raise ApplyRefused("restore payload needs absolute source paths")
+            self.inventory.scan()
+            if agent not in self.inventory.config_paths.get(path.absolute(), set()):
+                raise ApplyRefused("the recorded source is not a known configuration file for that agent")
             if path.resolve(strict=False) != target:
                 raise ApplyRefused("the source path changed; restore was refused")
             if payload.get("kind") == "toml" and agent == "codex":
@@ -487,60 +490,24 @@ class Applier:
         except (OSError, RuntimeError, ValueError) as error:
             return self.failure(str(error))
 
-    def restore_raw(self, agent: str, path: Path, name: str, raw: dict[str, Any]) -> AgentResult:
-        limit = MAX_CLAUDE_BYTES if agent == "claude-code" else MAX_CONFIG_BYTES
-        document = self.read_json_target(path, limit)
-        container, label = self.json_container(agent, document, create=True)
-        existing = container.get(name)
-        if existing == raw:
-            return AgentResult(agent, True, False, "already present", [])
-        if existing is not None:
-            return AgentResult(agent, False, False, f"{label} already has a different definition", [])
-        container[name] = raw
-        self.write_json_target(path, document)
-        return AgentResult(agent, True, True, f"restored to {label}", [self.inventory.logical_path(path)])
-
-    def restore(self, raw_payload: str) -> dict[str, Any]:
+    def restore(self, record_id: str, raw_payload: str) -> dict[str, Any]:
         try:
             payload = parse_json(raw_payload.encode("utf-8"))
         except (UnicodeError, ValueError):
             return self.failure("restore payload is not JSON")
-        if "format" in payload:
-            if type(payload["format"]) is not int or payload["format"] != 2:
-                return self.failure("restore payload has an unsupported format")
-            return self.restore_record(payload)
-        fields = payload.get("spec") if isinstance(payload, dict) else None
-        agent = str(payload.get("agent", "")) if isinstance(payload, dict) else ""
-        try:
-            path = parse_path(str(payload.get("path", ""))) if isinstance(payload, dict) else ""
-        except ValueError as error:
-            return self.failure(str(error))
-        if not isinstance(fields, dict) or agent not in WRITE_AGENTS or not path.startswith("/"):
-            return self.failure("restore payload is incomplete")
-        try:
-            if not isinstance(fields.get("name"), str) or not fields["name"] or fields.get("transport") not in {"stdio", *REMOTE_TRANSPORTS}:
-                raise ApplyRefused("restore payload has an invalid definition")
-            if any(not isinstance(fields.get(key, ""), str) for key in ("display", "command", "url")):
-                raise ApplyRefused("restore payload has invalid string fields")
-            if not isinstance(fields.get("args", []), list) or any(not isinstance(item, str) for item in fields.get("args", [])):
-                raise ApplyRefused("restore payload has invalid arguments")
-            for key in ("env", "headers"):
-                mapping = fields.get(key, {})
-                if not isinstance(mapping, dict) or any(not isinstance(item, str) for item in mapping.values()):
-                    raise ApplyRefused("restore payload has invalid environment or headers")
-            spec = ServerSpec(fields["name"], safe_label(fields["name"], "restored"), fields["transport"],
-                              fields.get("command", ""), tuple(fields.get("args", [])),
-                              fields.get("env", {}), fields.get("url", ""), fields.get("headers", {}))
-            raw = payload.get("raw")
-            if "raw" in payload and not isinstance(raw, dict):
-                raise ApplyRefused("restore payload has an invalid raw definition")
-            if isinstance(raw, dict):
-                agent_result = self.apply_toml(agent, Path(path), spec, "on", raw=raw) if agent == "codex" else self.restore_raw(agent, Path(path), spec.name, raw)
-            else:
-                agent_result = self.rewrite_source(agent, Path(path), spec, "on")
-        except (OSError, ValueError, TypeError) as error:
-            return self.failure(str(error))
-        return self.outcome(agent_result)
+        if not isinstance(payload, dict):
+            return self.failure("restore payload is not a record")
+        record = self.recovery.read(record_id)
+        if record is not None and record["payload"] != payload:
+            record = None
+        if record is None:
+            record = self.recovery.find(payload)
+        if record is None:
+            return self.failure("no prepared recovery record matches this payload")
+        prepared = record["payload"]
+        if type(prepared.get("format")) is not int or prepared["format"] != 2:
+            return self.failure("restore payload has an unsupported format")
+        return self.restore_record(prepared)
 
     def failure(self, message: str) -> dict[str, Any]:
         return {
