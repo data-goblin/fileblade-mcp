@@ -530,7 +530,10 @@ class Applier:
         prepared = record["payload"]
         if type(prepared.get("format")) is not int or prepared["format"] != 2:
             return self.failure("restore payload has an unsupported format")
-        return self.restore_record(prepared, record.get("context"))
+        document = self.restore_record(prepared, record.get("context"))
+        if document.get("ok"):
+            self.recovery.mark_restored(str(record["recordId"]))
+        return document
 
     def failure(self, message: str) -> dict[str, Any]:
         return {

@@ -308,6 +308,21 @@ class ExactUndo(unittest.TestCase):
         self.assertTrue(restored["ok"], restored)
         self.assertEqual(json.loads(self.source.read_text()), json.loads(original))
 
+    def test_a_restored_record_stops_holding_a_place_in_the_store(self):
+        self.agent = "claude-code"
+        self.source = self.project / ".mcp.json"
+        self.write(json.dumps({"mcpServers": {"tool": {"command": "printf"}}}))
+        removed = self.remove()
+        self.assertTrue(removed["ok"], removed)
+        store = RecoveryStore(self.inventory().recovery_directory())
+        self.assertEqual(store.live_records(), 1)
+        restored = self.restore(removed["payload"], removed["recordId"])
+        self.assertTrue(restored["ok"], restored)
+        self.assertEqual(store.live_records(), 0)
+        again = self.restore(removed["payload"], removed["recordId"])
+        self.assertTrue(again["ok"], again)
+        self.assertFalse(again["changed"])
+
     def test_the_store_refuses_a_new_removal_instead_of_evicting_undo_records(self):
         self.agent = "claude-code"
         self.source = self.project / ".mcp.json"
