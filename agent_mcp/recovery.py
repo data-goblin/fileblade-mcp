@@ -14,6 +14,7 @@ RECORD_LIFETIME_SECONDS = 3650 * 24 * 60 * 60
 RESTORED_LIFETIME_SECONDS = 7 * 24 * 60 * 60
 IDENTIFIER_CHARACTERS = set("0123456789abcdef")
 IDENTIFIER_LENGTH = 32
+MAX_SCANNED_RECORDS = 512
 
 
 class RecoveryFull(RuntimeError):
@@ -122,7 +123,7 @@ class RecoveryStore:
         except OSError:
             return []
         found = []
-        for entry in entries[: MAX_RECORDS * 2]:
+        for entry in entries[:MAX_SCANNED_RECORDS]:
             document = self.read(entry.stem)
             if document is not None:
                 found.append(document)
@@ -138,9 +139,9 @@ class RecoveryStore:
         document["restoredAt"] = int(time.time())
         stored = {key: value for key, value in document.items() if key != "recordId"}
         encoded = json.dumps(stored, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode("utf-8")
+        staged = self.directory / f"{record_id}.{secrets.token_hex(8)}.staged"
         try:
-            descriptor = os.open(self.record_path(record_id),
-                                 os.O_WRONLY | os.O_TRUNC | os.O_NOFOLLOW | os.O_CLOEXEC)
+            descriptor = os.open(staged, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
         except OSError:
             return
         try:
@@ -151,16 +152,30 @@ class RecoveryStore:
                     raise OSError("the recovery record could not be updated")
                 written += progress
             os.fsync(descriptor)
-        except OSError:
-            pass
-        finally:
             os.close(descriptor)
+            os.replace(staged, self.record_path(record_id))
+        except OSError:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+            try:
+                staged.unlink()
+            except OSError:
+                pass
+            return
+        parent = os.open(self.directory, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        try:
+            os.fsync(parent)
+        finally:
+            os.close(parent)
 
     def find(self, payload: dict[str, Any]) -> dict[str, Any] | None:
-        for document in self.records():
-            if document["payload"] == payload:
+        matches = [document for document in self.records() if document["payload"] == payload]
+        for document in matches:
+            if "restoredAt" not in document:
                 return document
-        return None
+        return matches[0] if matches else None
 
     def discard(self, record_id: str) -> None:
         if not valid_identifier(record_id):
@@ -172,14 +187,24 @@ class RecoveryStore:
 
     def expired(self) -> None:
         try:
-            entries = list(self.directory.glob("*.json"))
+            entries = list(self.directory.glob("*"))
         except OSError:
             return
         now = time.time()
+        completed: list[tuple[float, Path]] = []
         for entry in entries:
+            if not entry.name.endswith(".json") and not entry.name.endswith(".staged"):
+                continue
             try:
                 info = entry.lstat()
             except OSError:
+                continue
+            if entry.name.endswith(".staged"):
+                if now - info.st_mtime > RESTORED_LIFETIME_SECONDS:
+                    try:
+                        entry.unlink()
+                    except OSError:
+                        pass
                 continue
             document = self.read(entry.stem)
             restored = document is not None and "restoredAt" in document
@@ -189,3 +214,13 @@ class RecoveryStore:
                     entry.unlink()
                 except OSError:
                     pass
+                continue
+            if restored:
+                completed.append((info.st_mtime, entry))
+        completed.sort(key=lambda item: item[0])
+        while len(completed) > MAX_RECORDS:
+            _, entry = completed.pop(0)
+            try:
+                entry.unlink()
+            except OSError:
+                pass
