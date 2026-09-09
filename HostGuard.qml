@@ -62,7 +62,10 @@ Item {
     if (installing || plan.command.length === 0) return
     installing = true
     Quickshell.execDetached(plan.command)
+    enableDeadline.restart()
   }
+
+  Timer { id: enableDeadline; interval: 22000; onTriggered: { guard.installing = false; guard.refresh() } }
 
   Loader {
     active: guard.showing
