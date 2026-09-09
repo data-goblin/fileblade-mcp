@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "data-goblin.fileblade-mcp",
   "name": "FileBlade Agent MCP",
-  "version": "0.1.0-beta",
+  "version": "0.1.0",
   "author": "Kurt Buhler",
   "license": "MIT",
   "description": "Configuration-only MCP inventory with cross-agent copies and recoverable removal",
@@ -30,6 +30,7 @@
         "glyph": "",
         "description": "Configuration-only MCP server inventory",
         "entry": "blades/Module.qml",
+        "provider": "Provider.qml",
         "singleton": true,
         "minHeight": 150
       }

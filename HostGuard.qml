@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Effects
 import Quickshell
+import Quickshell.Io
 import Quickshell.Wayland
 import qs.Commons
 import "HostGuard.js" as HostGuard
@@ -8,18 +9,54 @@ import "HostGuard.js" as HostGuard
 Item {
   id: guard
 
-  property var pluginRegistry: null
   property string pluginId: ""
   property bool dismissed: false
   property bool installing: false
 
-  readonly property var plan: {
-    if (!pluginRegistry) return { show: false, names: [], action: "", command: [] }
-    var registry = pluginRegistry
-    var revision = registry.registryRevision
-    return HostGuard.plan(registry.installedPlugins, function(id) { return registry.isEnabled(id) }, pluginId)
-  }
+  property string sourceDir: ""
+  property var observation: null
+  property int retryDelay: 1000
+
+  readonly property var plan: HostGuard.plan(observation, pluginId)
   readonly property bool showing: !dismissed && !!plan.show
+
+  function refresh() {
+    if (dismissed || worker.running || !pluginId || !sourceDir) return
+    worker.command = [sourceDir + "/bin/fileblade-host-status"]
+    worker.running = true
+    deadline.restart()
+  }
+
+  function accept(text, exitCode) {
+    deadline.stop()
+    var next = { schemaVersion: 1, state: "unknown", plugins: observation ? observation.plugins : [] }
+    try {
+      var parsed = JSON.parse(text)
+      if (exitCode === 0 && parsed && parsed.schemaVersion === 1) next = parsed
+    } catch (error) {}
+    observation = next
+    retryDelay = next.state === "ready" ? 30000 : Math.min(retryDelay * 2, 30000)
+    retry.restart()
+  }
+
+  onPluginIdChanged: Qt.callLater(refresh)
+  onSourceDirChanged: Qt.callLater(refresh)
+  Component.onCompleted: Qt.callLater(refresh)
+  Component.onDestruction: if (worker.running) worker.signal(15)
+  onDismissedChanged: {
+    if (dismissed) {
+      retry.stop()
+      if (worker.running) worker.signal(15)
+    }
+  }
+
+  Process {
+    id: worker
+    stdout: StdioCollector { id: output; waitForEnd: true }
+    onExited: function(exitCode) { guard.accept(output.text, exitCode) }
+  }
+  Timer { id: deadline; interval: 5000; onTriggered: worker.signal(15) }
+  Timer { id: retry; interval: guard.retryDelay; onTriggered: guard.refresh() }
 
   function install() {
     if (installing || plan.command.length === 0) return
@@ -130,7 +167,7 @@ Item {
             width: parent.width
             textFormat: Text.PlainText
             wrapMode: Text.WordWrap
-            visible: guard.plan.command.length === 0
+            visible: guard.observation && guard.observation.state === "missing"
             text: HostGuard.HOST_REPOSITORY
             color: Color.muted
             font.family: Style.font.family
