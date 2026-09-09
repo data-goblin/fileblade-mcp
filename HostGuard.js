@@ -9,20 +9,14 @@ var UNKNOWN_MESSAGE = "FileBlade availability could not be checked. The check wi
 
 function enableCommand() {
   var script = [
-    "out=$(omarchy plugin enable " + HOST_ID + " 2>&1) || {",
-    "  notify-send -u critical 'FileBlade could not be enabled' \"$(printf '%s\\n' \"$out\" | tail -n 1)\"",
-    "  omarchy-shell shell rescanPlugins",
-    "  exit 1",
-    "}",
-    "for _ in $(seq 1 100); do",
-    "  jq -e 'any(.plugins[]?; .id == \"" + HOST_ID + "\")' \"$HOME/.config/omarchy/shell.json\" >/dev/null 2>&1 &&",
-    "    omarchy-shell " + HOST_ID + " status >/dev/null 2>&1 && break",
+    "timeout --kill-after=1s 5s omarchy plugin enable " + HOST_ID + " >/dev/null 2>&1 || exit 1",
+    "for _ in $(seq 1 50); do",
+    "  timeout --kill-after=1s 2s omarchy-shell " + HOST_ID + " status >/dev/null 2>&1 && break",
     "  sleep 0.1",
     "done",
-    "sleep 1",
     "exec omarchy restart shell"
   ]
-  return ["sh", "-c", script.join("\n")]
+  return ["timeout", "--kill-after=1s", "20s", "sh", "-c", script.join("\n")]
 }
 
 function plan(snapshot, selfId) {

@@ -428,7 +428,7 @@ class Applier:
             outcome["recordId"] = record_id
         return outcome
 
-    def remove(self, identifier: str, *, prepare: bool = False, expected_payload: dict | None = None) -> dict[str, Any]:
+    def remove(self, identifier: str, *, prepare: bool = False, expected_payload: dict | None = None, transaction_id: str = "") -> dict[str, Any]:
         self.inventory.scan()
         definition = self.inventory.definition_by_id(identifier)
         if definition is None:
@@ -455,11 +455,11 @@ class Applier:
             encoded = json.dumps(payload, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode("utf-8")
             if len(encoded) > 1024 * 1024:
                 return self.failure("the definition exceeds the undo record size limit; edit the source directly")
-            record_id = self.recovery.write(payload, identifier, self.recovery_context())
-            if prepare:
-                return self.outcome(AgentResult(agent, True, False, "prepared recovery"), payload, record_id)
             if expected_payload is not None and payload != expected_payload:
                 return self.failure("the source definition changed after recovery was prepared; nothing was changed")
+            record_id = self.recovery.write(payload, identifier, self.recovery_context(), transaction_id)
+            if prepare:
+                return self.outcome(AgentResult(agent, True, False, "prepared recovery"), payload, record_id)
             if path.resolve(strict=True) != target:
                 raise ApplyRefused("the source path changed; refresh and retry")
             error = atomic_write(path, encoded_source, snapshot=self.snapshots.get(path))
@@ -513,11 +513,12 @@ class Applier:
         except (OSError, RuntimeError, ValueError) as error:
             return self.failure(str(error))
 
-    def restore(self, record_id: str, raw_payload: str) -> dict[str, Any]:
+    def restore(self, record_id: str, raw_payload: str | None) -> dict[str, Any]:
+        record = self.recovery.read(record_id)
         try:
-            payload = parse_json(raw_payload.encode("utf-8"))
-        except (UnicodeError, ValueError):
-            return self.failure("restore payload is not JSON")
+            payload = record["payload"] if raw_payload is None and record else parse_json(raw_payload.encode("utf-8"))
+        except (AttributeError, UnicodeError, ValueError):
+            return self.failure("restore payload is not JSON or its recovery record is unavailable")
         if not isinstance(payload, dict):
             return self.failure("restore payload is not a record")
         record = self.recovery.read(record_id)

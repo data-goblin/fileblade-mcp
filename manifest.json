@@ -17,14 +17,14 @@
       {
         "id": "inventory",
         "entry": "bin/agent-mcpctl",
-        "read": ["list", "prepare-remove"],
-        "write": ["apply", "remove-prepared", "restore"],
+        "read": ["list", "recovery-list"],
+        "write": ["apply", "prepare-remove", "remove-prepared", "restore", "discard"],
         "timeoutMs": 8000
       }
     ],
     "data-goblin.fileblade/blade": [
       {
-        "hostContract": 2,
+        "hostContract": 3,
         "id": "mcp",
         "name": "MCP",
         "glyph": "",

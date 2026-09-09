@@ -27,6 +27,8 @@ def stdin_payload() -> tuple[str, str]:
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(prog="agent-mcpctl")
     commands = result.add_subparsers(dest="command", required=True)
+    recovery = commands.add_parser("recovery-list", help="List private recovery ids and dates without exposing their contents")
+    recovery.add_argument("--json", action="store_true", required=True)
     listing = commands.add_parser("list", help="list configuration-only MCP definitions")
     listing.add_argument("--project", required=True)
     listing.add_argument("--json", action="store_true", required=True)
@@ -42,19 +44,25 @@ def parser() -> argparse.ArgumentParser:
         removing = commands.add_parser(command, help="prepare or perform removal of a listed definition")
         removing.add_argument("--project", required=True)
         removing.add_argument("--id", required=True)
+        removing.add_argument("--transaction-id", default="")
         removing.add_argument("--json", action="store_true", required=True)
         if command == "remove-prepared":
             removing.add_argument("--payload-stdin", action="store_true", required=True)
-    restoring = commands.add_parser("restore", help="write a removed definition payload back into its source config")
-    restoring.add_argument("--project", default="")
-    restoring.add_argument("--record-id", required=True)
-    restoring.add_argument("--payload-stdin", action="store_true", required=True)
-    restoring.add_argument("--json", action="store_true", required=True)
+    for command in ("restore", "discard"):
+        restoring = commands.add_parser(command, help="Restore a removal or permanently discard its private recovery record")
+        restoring.add_argument("--project", default="")
+        restoring.add_argument("--record-id", required=True)
+        restoring.add_argument("--payload-stdin", action="store_true")
+        restoring.add_argument("--json", action="store_true", required=True)
     return result
 
 
 def main(arguments: list[str] | None = None) -> int:
     options = parser().parse_args(arguments)
+    if options.command == "recovery-list":
+        document = Applier(Inventory("")).recovery.inventory()
+        sys.stdout.write(json.dumps(document, separators=(",", ":")) + "\n")
+        return 0 if document["ok"] else 1
     if options.command == "list":
         try:
             if options.watch:
@@ -68,20 +76,22 @@ def main(arguments: list[str] | None = None) -> int:
             return 1
         sys.stdout.write(output + "\n")
         return 0
-    if options.command in ("apply", "remove", "prepare-remove", "remove-prepared", "restore"):
+    if options.command in ("apply", "remove", "prepare-remove", "remove-prepared", "restore", "discard"):
         try:
             applier = Applier(Inventory(options.project))
             if options.command == "apply":
                 document = applier.apply(options.id, options.agent, options.state)
             elif options.command in ("remove", "prepare-remove"):
-                document = applier.remove(options.id, prepare=options.command == "prepare-remove")
+                document = applier.remove(options.id, prepare=options.command == "prepare-remove", transaction_id=options.transaction_id)
             elif options.command == "remove-prepared":
                 raw_payload, payload_error = stdin_payload()
                 expected = json.loads(raw_payload) if not payload_error else None
-                document = applier.remove(options.id, expected_payload=expected) if isinstance(expected, dict) else applier.failure("prepared recovery payload is missing or invalid")
+                document = applier.remove(options.id, expected_payload=expected, transaction_id=options.transaction_id) if isinstance(expected, dict) else applier.failure("prepared recovery payload is missing or invalid")
+            elif not options.payload_stdin:
+                document = applier.recovery.discard_payload(options.record_id) if options.command == "discard" else applier.restore(options.record_id, None)
             else:
                 raw_payload, payload_error = stdin_payload()
-                document = applier.failure(payload_error) if payload_error else applier.restore(options.record_id, raw_payload)
+                document = applier.failure(payload_error) if payload_error else (applier.recovery.discard_payload(options.record_id, raw_payload) if options.command == "discard" else applier.restore(options.record_id, raw_payload))
         except (OSError, ValueError, TimeoutError):
             document = {
                 "ok": False,

@@ -68,7 +68,7 @@ class ExactUndo(unittest.TestCase):
         self.assertEqual(tomllib.loads(self.source.read_text()), tomllib.loads(original))
         self.assertEqual(self.source.read_text(), original)
 
-    def test_prepared_removal_never_writes_and_stale_records_are_refused(self):
+    def test_prepared_removal_preserves_the_source_and_stale_records_are_refused(self):
         self.write('[mcp_servers.tool]\ncommand = "printf"\n')
         before = self.source.read_bytes()
         identifier = self.identifier()
