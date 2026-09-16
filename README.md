@@ -2,6 +2,9 @@
 
 ---
 
+> [!NOTE]
+> These repositories contain reference extensions for FileBlade <= 0.1.3. As of 0.2.0, FileBlade is a native Omarchy app that has incorporated these extensions into core. They remain here for reference and examples of a FileBlade extension for LLMs
+
 **FileBlade Agent MCP** shows the MCP servers your agents are configured to use in [FileBlade](https://github.com/data-goblin/fileblade), which gives you IDE-like sidebars for Omarchy. 
 
 <p align="center"><img src="assets/mcp-blade.png" alt="Agent MCP blade" width="640"></p>
